@@ -1,0 +1,123 @@
+version: '3.8'
+
+services:
+  # SQL Server Database
+  sqlserver:
+    image: mcr.microsoft.com/mssql/server:2019-latest
+    container_name: mss301-sqlserver
+    environment:
+      - ACCEPT_EULA=Y
+      - SA_PASSWORD=MyPass12
+      - MSSQL_PID=Express
+    ports:
+      - "1433:1433"
+    volumes:
+      - sqlserver_data:/var/opt/mssql
+      - ./sql-init:/docker-entrypoint-initdb.d
+    networks:
+      - mss301-network
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P MyPass12 -C -Q 'SELECT 1'"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 45s
+    command: >
+      bash -c "
+      /opt/mssql/bin/sqlservr &
+      sleep 30 &&
+      /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P MyPass12 -C -i /docker-entrypoint-initdb.d/01-create-databases.sql &&
+      /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P MyPass12 -C -i /docker-entrypoint-initdb.d/02-init-account-db.sql &&
+      /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P MyPass12 -C -i /docker-entrypoint-initdb.d/03-init-brand-db.sql &&
+      /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P MyPass12 -C -i /docker-entrypoint-initdb.d/04-init-blindbox-db.sql &&
+      wait
+      "
+
+  # MS Brand Service
+  ms-brand:
+    build:
+      context: ./MSBrand
+      dockerfile: Dockerfile
+    container_name: ms-brand
+    environment:
+      - DB_URL=jdbc:sqlserver://sqlserver:1433;databaseName=MSS301Summer25DBBrand;encrypt=true;trustServerCertificate=true
+      - DB_USERNAME=sa
+      - DB_PASSWORD=MyPass12
+    ports:
+      - "8082:8082"
+    depends_on:
+      - sqlserver
+    networks:
+      - mss301-network
+    restart: unless-stopped
+
+  # MS Account Service
+  ms-account:
+    build:
+      context: ./MSAccount
+      dockerfile: Dockerfile
+    container_name: ms-account
+    environment:
+      - DB_URL=jdbc:sqlserver://sqlserver:1433;databaseName=MSS301Summer25DBAccount;encrypt=true;trustServerCertificate=true
+      - DB_USERNAME=sa
+      - DB_PASSWORD=MyPass12
+    ports:
+      - "8081:8081"
+    depends_on:
+      - sqlserver
+    networks:
+      - mss301-network
+    restart: unless-stopped
+
+  # MS BlindBox Service
+  ms-blindbox:
+    build:
+      context: ./MSBlindBox
+      dockerfile: Dockerfile
+    container_name: ms-blindbox
+    environment:
+      - DB_URL=jdbc:sqlserver://sqlserver:1433;databaseName=MSS301Summer25DBBlindBox;encrypt=true;trustServerCertificate=true
+      - DB_USERNAME=sa
+      - DB_PASSWORD=MyPass12
+      - BRAND_SERVICE_URL=http://ms-brand:8082
+    ports:
+      - "8083:8083"
+    depends_on:
+      - sqlserver
+      - ms-brand
+    networks:
+      - mss301-network
+    restart: unless-stopped
+
+  # API Gateway
+  api-gateway:
+    build:
+      context: ./APIGateway
+      dockerfile: Dockerfile
+    container_name: api-gateway
+    environment:
+      - SPRING_CLOUD_GATEWAY_ROUTES_0_ID=account-service
+      - SPRING_CLOUD_GATEWAY_ROUTES_0_URI=http://ms-account:8081
+      - SPRING_CLOUD_GATEWAY_ROUTES_0_PREDICATES_0=Path=/api/auth/**
+      - SPRING_CLOUD_GATEWAY_ROUTES_1_ID=brand-service
+      - SPRING_CLOUD_GATEWAY_ROUTES_1_URI=http://ms-brand:8082
+      - SPRING_CLOUD_GATEWAY_ROUTES_1_PREDICATES_0=Path=/api/brands/**
+      - SPRING_CLOUD_GATEWAY_ROUTES_2_ID=blindbox-service
+      - SPRING_CLOUD_GATEWAY_ROUTES_2_URI=http://ms-blindbox:8083
+      - SPRING_CLOUD_GATEWAY_ROUTES_2_PREDICATES_0=Path=/api/blindboxes/**
+    ports:
+      - "8080:8080"
+    depends_on:
+      - ms-account
+      - ms-brand
+      - ms-blindbox
+    networks:
+      - mss301-network
+    restart: unless-stopped
+
+volumes:
+  sqlserver_data:
+
+networks:
+  mss301-network:
+    driver: bridge
